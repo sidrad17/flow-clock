@@ -1,6 +1,15 @@
 # The Flow Clock
 
 Gator Quant Hacks 2026, Systematic Trading track. **Quant note:** [`docs/Flow-Clock-Note.pdf`](docs/Flow-Clock-Note.pdf).
+Team: Siddharth Radhakrishnan, Siddhant Pallod, Atharv Diwan, Imbisat Malik.
+
+| Headline (net of costs) | In-sample | Test window 2024-10 to 2026-09 (run once) |
+|---|---|---|
+| Month-end trade, ZN futures: net Sharpe (1× / 2× costs) | 0.79 / 0.71 (2010-07 to 2024-09) | 0.64 / 0.55 (consistent) |
+| Headline 1: slope b of the month-end return on forced demand z | 0.011 (t = 0.17): failed | 0.875 (t = 2.99): sign confirmed |
+| Headline 2: net Sharpe, forecast-sized vs calendar-only (cash) | 0.57 vs 0.63: failed | 1.20 vs 0.71: pass |
+| Headline 3: Flow Clock book vs demand leg alone (cash) | 0.87 vs 0.63 | −0.18 vs 0.71: kill condition met |
+| Trials | 519 distinct variants logged (3,115 runs) | 14 rows, one run |
 
 Two groups must trade US Treasuries on dates known in advance: primary dealers absorbing new bonds at coupon auctions,
 and bond index funds rebalancing at month-end. Their forced trades move prices for a few days. The Flow Clock is a
@@ -65,28 +74,57 @@ sensitivity-grid cells. The placebo window (business days 4–7) shows no rally 
 
 ## Model
 
-No machine learning: about 380 monthly observations are too few to fit one without overfitting, and every rule can be
-read in the code. All rules were fixed in a tagged file before their first result.
+Three parts, each fixed in a tagged file before its first result. No machine learning: about 380 monthly observations
+are too few to fit one without overfitting, and every rule can be read in the code.
 
-1. **Signals.** Auction size against the previous six auctions of the same maturity, known at A−5:
-   zSₑ = (Sₑ − mean₆) / sd₆, clipped to ±3. Late-month supply zAₘ: standardized size × duration of auctions from T−8
-   to T−4. Forced duration demand FDDₘ = Extₘ + cₘ × D(next), rebuilt point-in-time from public auction records with
-   Fed SOMA holdings deducted; zₘ is its past-only z-score.
-2. **Legs.** Supply: short the auctioned maturity from close A−5 to close A, long from A to A+5. Each leg is sized in
-   DV01 so a 1-sd 5-day move costs 0.25% of capital. Demand: long the 10-year (ZN in futures) from T−4 to T, sized so
-   a 1-sd 4-day move costs 1%. Forecast-sized variant: wₘ = min(max(1 + zₘ, 0), 2).
-3. **Book.** Positions netted in DV01 by maturity each day. Futures map: 2y/3y→ZT, 5y→ZF, 7y→ZN, 10y→TN (ZN before
-   2016), 20y→ZB, 30y→UB.
-4. **Risk rules (each tested on and off).** 60-day volatility targeting; half size when a scheduled FOMC decision falls
-   in the window; half size after a drawdown above 2× expected yearly volatility, until a new high; gross notional
-   ≤ 3× capital.
-5. **Costs.** Cash: 0.5bp of yield per round trip (1.4–1.8× Fleming 2003 interdealer spreads). Futures: 1 tick + $2 per
-   contract. Every result is also shown at 2×.
+1. **Signal model.** The calendar of forced flows: every nominal coupon auction date A (Fiscal Data) and every
+   month-end T, the last bond business day. Plus the size of each auction against the previous six of the same
+   maturity, known at A−5: zSₑ = (Sₑ − mean₆) / sd₆, clipped to ±3. Late-month supply zAₘ is the standardized
+   size × duration of auctions from T−8 to T−4. Forced duration demand FDDₘ = Extₘ + cₘ × D(next) is rebuilt
+   point-in-time from public auction records with Fed SOMA holdings deducted; zₘ is its past-only z-score.
+2. **Predictive model.** Pre-registered regressions that test whether the signals predict returns: Rₘ = a + b·zₘ + εₘ
+   (H1, Newey-West); the event return post − pre = α + β·zSₑ (H6c, clustered by week); Rₘ = a + c·zAₘ (H7); and the
+   dealer-inventory test H8. Results are in the tables above.
+3. **Sizing model.** Volatility-targeted DV01. Each auction leg (short the maturity from close A−5 to A, long from A to
+   A+5) is sized so a 1-sd 5-day move costs 0.25% of capital. The month-end leg (long the 10-year, ZN in futures,
+   from T−4 to T) is sized so a 1-sd 4-day move costs 1%. Forecast-sized variant: wₘ = min(max(1 + zₘ, 0), 2).
+   Positions are netted in DV01 by maturity. Risk rules, each tested on and off: half size when a scheduled FOMC
+   decision falls in the window; half size after a drawdown above 2× expected yearly volatility, until a new high;
+   gross notional ≤ 3× capital.
+
+Futures map: 2y/3y→ZT, 5y→ZF, 7y→ZN, 10y→TN (ZN before 2016), 20y→ZB, 30y→UB. Costs: cash 0.5bp of yield per round
+trip (1.4–1.8× the interdealer spreads in Fleming 2003); futures 1 tick + $2 per contract. Every result is also shown
+at 2× costs.
+
+## Data sources
+
+| Source | Series | Use | Key? |
+|---|---|---|---|
+| [US Treasury Fiscal Data, `auctions_query`](https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query) | Every coupon auction since 1979 | Auction events, sizes, index rebuild | no |
+| [US Treasury Fiscal Data, MSPD table 1](https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/debt/mspd/mspd_table_1) | Amounts outstanding | Index rebuild checks | no |
+| [FRED](https://fred.stlouisfed.org/) | DGS1, DGS2, DGS3, DGS5, DGS7, DGS10, DGS20, DGS30, DTB3 | Cash returns, DV01, financing, bond calendar | no |
+| [NY Fed Markets Data: SOMA](https://markets.newyorkfed.org/api/soma) | Fed holdings by CUSIP | Fed-held bonds removed from the index | no |
+| [NY Fed Markets Data: primary dealers](https://markets.newyorkfed.org/api/pd) | Weekly dealer positions and volume | H8; cash capacity | no |
+| [Ken French data library](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html) | Daily US equity return | Pension-rebalancing control (H5) | no |
+| [Federal Reserve FOMC calendars](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm) | Scheduled decision dates | FOMC risk rule | no |
+| [Databento](https://databento.com/) GLBX.MDP3 (licensed) | CME ZT, ZF, ZN, TN, ZB, UB settlements, volume, definitions | Futures layer only; only derived tables are committed | yes (rebuild only) |
+
+The public data is frozen in `data/snapshot/` (test window: `data/oos/`) with SHA-256 checksums and a vintage file.
+
+## Open dataset
+
+`outputs/extension_monthly.csv`: a point-in-time rebuild of the US Treasury index's month-end forced duration
+demand. One row per month from 1990-01 to 2024-09 (417 rows; the first 36 are warm-up, `in_sample` = False). Columns:
+month, T (last bond business day), E (rebalance entry day), extension `Ext`, coupon cash share `c_m`, `FDD`, index
+duration and market value now and next (after deducting Fed SOMA holdings), counts of added, removed and reopened
+bonds, the SOMA as-of dates used, and Ext, cash and FDD by maturity bucket (1–3y, 3–7y, 7–10y, 10–20y, 20y+). Built
+only from public data by `python run_all.py`; free to reuse.
 
 ## Known flaws (disclosed, not fixed after seeing results)
 
 - 66 of 662 2-year (ZT) futures auction legs, in the zero-rate years (2011–14, 2020–21), got a weak DV01 fit
-  (R² < 0.5), and 62 hit the 3× cap. The month-end leg is unaffected.
+  (R² < 0.5), and 62 hit the 3× cap (counted from `outputs/tables/futures_legs_insample.csv`). The
+  month-end leg is unaffected.
 - ZN month-end capacity is $1.41B with most-active-contract volume and $333M with the rule
   as first written. The first reads the thin new contract in roll months. Both are reported.
 - Databento flagged a few test-window days as reduced quality (for example 2025-09-17, 2025-09-24 and 2025-11-28).
@@ -106,9 +144,9 @@ stays the pre-registered H1.
 
 Every tag is on GitHub; `git show <tag>` gives its commit and time:
 
-| Tag | Commit | Committed (ET) | Fixed before any related result |
+| Tag | Commit | Commit time (ET) | Fixed before any related result |
 |---|---|---|---|
-| `gate1-prereg` | 745354e | Oct 3, 1:00 AM | Month-end hypothesis H1–H5 and every parameter |
+| `gate1-prereg` | 745354e | Oct 3, 1:00 AM (tag pushed 1:02 AM) | Month-end hypothesis H1–H5 and every parameter |
 | `prereg-addendum` | dbfe85e | Oct 3, 3:34 AM | Fed SOMA deduction by CUSIP; refunding-month analyses |
 | `prereg-flowclock` | 8c41154 | Oct 3, 4:27 AM | Auction hypothesis H6a–c, H7, the Flow Clock book and its kill conditions |
 | `prereg-dealers` | 15f67bc | Oct 3, 10:27 PM | H8 dealer-inventory test |
