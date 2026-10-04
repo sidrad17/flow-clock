@@ -8,8 +8,18 @@ Team: Siddharth Radhakrishnan, Siddhant Pallod, Atharv Diwan, Imbisat Malik.
 | Month-end trade, ZN futures: net Sharpe (1× / 2× costs) | 0.79 / 0.71 (2010-07 to 2024-09) | 0.64 / 0.55 (consistent) |
 | Headline 1: slope b of the month-end return on forced demand z | 0.011 (t = 0.17): failed | 0.875 (t = 2.99): sign confirmed |
 | Headline 2: net Sharpe, forecast-sized vs calendar-only (cash) | 0.57 vs 0.63: failed | 1.20 vs 0.71: pass |
-| Headline 3: Flow Clock book vs demand leg alone (cash) | 0.87 vs 0.63 | −0.18 vs 0.71: kill condition met |
+| Headline 3: Flow Clock book vs demand leg alone (cash) | 0.87 vs 0.63: passed | −0.18 vs 0.71: kill condition met |
 | Trials | 519 distinct variants logged (3,115 runs) | 14 rows, one run |
+
+**Reproduce every number with one command** (no API key; about 2 min on 8 cores, 6-7 min on 2):
+
+```bash
+git clone https://github.com/sidrad17/flow-clock.git && cd flow-clock
+python3.12 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+python run_all.py
+```
+
+How to check the output, and what needs a Databento key: [Reproduce](#reproduce).
 
 Two groups must trade US Treasuries on dates known in advance: primary dealers absorbing new bonds at coupon auctions,
 and bond index funds rebalancing at month-end. Their forced trades move prices for a few days. The Flow Clock is a
@@ -103,8 +113,8 @@ at 2× costs.
 | [US Treasury Fiscal Data, `auctions_query`](https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query) | Every coupon auction since 1979 | Auction events, sizes, index rebuild | no |
 | [US Treasury Fiscal Data, MSPD table 1](https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/debt/mspd/mspd_table_1) | Amounts outstanding | Index rebuild checks | no |
 | [FRED](https://fred.stlouisfed.org/) | DGS1, DGS2, DGS3, DGS5, DGS7, DGS10, DGS20, DGS30, DTB3 | Cash returns, DV01, financing, bond calendar | no |
-| [NY Fed Markets Data: SOMA](https://markets.newyorkfed.org/api/soma) | Fed holdings by CUSIP | Fed-held bonds removed from the index | no |
-| [NY Fed Markets Data: primary dealers](https://markets.newyorkfed.org/api/pd) | Weekly dealer positions and volume | H8; cash capacity | no |
+| [NY Fed: SOMA holdings](https://www.newyorkfed.org/markets/soma-holdings) ([API docs](https://markets.newyorkfed.org/static/docs/markets-api.html)) | Fed holdings by CUSIP | Fed-held bonds removed from the index | no |
+| [NY Fed: primary dealer statistics](https://www.newyorkfed.org/markets/counterparties/primary-dealers-statistics) | Weekly dealer positions and volume | H8; cash capacity | no |
 | [Ken French data library](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html) | Daily US equity return | Pension-rebalancing control (H5) | no |
 | [Federal Reserve FOMC calendars](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm) | Scheduled decision dates | FOMC risk rule | no |
 | [Databento](https://databento.com/) GLBX.MDP3 (licensed) | CME ZT, ZF, ZN, TN, ZB, UB settlements, volume, definitions | Futures layer only; only derived tables are committed | yes (rebuild only) |
@@ -117,8 +127,40 @@ The public data is frozen in `data/snapshot/` (test window: `data/oos/`) with SH
 demand. One row per month from 1990-01 to 2024-09 (417 rows; the first 36 are warm-up, `in_sample` = False). Columns:
 month, T (last bond business day), E (rebalance entry day), extension `Ext`, coupon cash share `c_m`, `FDD`, index
 duration and market value now and next (after deducting Fed SOMA holdings), counts of added, removed and reopened
-bonds, the SOMA as-of dates used, and Ext, cash and FDD by maturity bucket (1–3y, 3–7y, 7–10y, 10–20y, 20y+). Built
+bonds, the SOMA as-of dates used, and Ext, cash and FDD by maturity bucket (1–3y, 3–7y, 7–10y, 10–20y, 20y+). Also: `n_now` and `n_next` (bonds in the index
+now and after the rebalance), `n_estimated` (tranches auctioned after E whose announced offering amount stands in for
+the unknown final amount), `n_skipped` (tranches announced after E, left out because they were unknowable at E),
+`soma_rule` (`cusip` when Fed holdings are deducted bond by bond, `auction` before the NY Fed SOMA data starts) and
+`soma_now_bn` / `soma_next_bn` (Fed holdings deducted, $bn). Built
 only from public data by `python run_all.py`; free to reuse.
+
+## Old bond vs new bond (on-the-run liquidity)
+
+When the Treasury auctions a new bond, it becomes the "on-the-run" issue: the most traded and usually the richest. The
+bond it replaces becomes "off-the-run", trades less and usually cheapens. Where can this touch our results?
+
+- **The tradable claim is not exposed.** The month-end ZN futures trade never holds either bond; futures track the
+  cheapest-to-deliver note. Its version of "old to new" is the quarterly contract roll: we hold the contract whose
+  first intention day is more than 5 business days after exit, and report capacity on the most-active contract
+  ($1.41B) and on the contract held ($333M).
+- **Cash month-end: barely.** The 10-year curve input changes at 10-year auctions, which fall mid-month. In the 381
+  in-sample months no 10-year auction fell in the T−4..T window, and a 10-year settlement fell in it twice: a new issue
+  that settled on the entry day itself (Nov 1995) and a reopening (Jun 2019), which does not change the input bond.
+  None fell in the 24 test-window months. ZN futures replicate the cash trade (daily correlation 0.95).
+- **The cash auction leg is exposed in three ways.** (1) The constant-maturity curve switches its input from the old
+  bond to the new one. (2) The old bond losing its on-the-run premium and the new one gaining it could, on its own,
+  look like a dip then a bounce. (3) Trading it means shorting an on-the-run bond, which can be costly to borrow in
+  repo, and later holding an off-the-run bond whose spreads are wider than our 0.5bp cost.
+- **What we tested** (in-sample, `results.json["cmt_switch_diagnostic"]`). Reopenings, where no new bond is created and
+  nothing changes status, show the effect too: across the 10-, 20- and 30-year, the auction long-short earns +0.31% per
+  auction at reopenings (t = 2.18, n = 338) and +0.47% at new issues (t = 2.75, n = 218); the difference is not
+  significant (t = −0.73). The two halves split by issue type: the pre-auction dip comes from reopenings (t = −3.03)
+  and the post-auction bounce from new issues (t = 2.42), so a liquidity-status effect may add to the bounce after new
+  issues. At equal risk, futures, which follow an older off-the-run bond, capture 69% of the cash move, and 89% of the
+  cash-minus-futures gap falls outside auction and settlement days.
+- **What we cannot measure.** We have no bond-level prices or repo rates, so the old-new spread and the cost of
+  borrowing the on-the-run bond are not in our costs. That is one more reason we do not claim the cash auction trade
+  is tradable: it also failed its futures kill test and lost money in the test window.
 
 ## Known flaws (disclosed, not fixed after seeing results)
 
@@ -146,7 +188,7 @@ Every tag is on GitHub; `git show <tag>` gives its commit and time:
 
 | Tag | Commit | Commit time (ET) | Fixed before any related result |
 |---|---|---|---|
-| `gate1-prereg` | 745354e | Oct 3, 1:00 AM (tag pushed 1:02 AM) | Month-end hypothesis H1–H5 and every parameter |
+| `gate1-prereg` | 745354e | Oct 3, 1:00 AM (tagged 1:02 AM) | Month-end hypothesis H1–H5 and every parameter |
 | `prereg-addendum` | dbfe85e | Oct 3, 3:34 AM | Fed SOMA deduction by CUSIP; refunding-month analyses |
 | `prereg-flowclock` | 8c41154 | Oct 3, 4:27 AM | Auction hypothesis H6a–c, H7, the Flow Clock book and its kill conditions |
 | `prereg-dealers` | 15f67bc | Oct 3, 10:27 PM | H8 dealer-inventory test |
@@ -195,12 +237,16 @@ rebuilds `outputs/results.json` and every table in `outputs/tables/` and figure 
 it reproduced the committed numbers:
 
 ```bash
-git status --short                # only outputs/results.json is listed
-git diff outputs/results.json     # only meta.commit and meta.generated_utc change
+git status --short                # macOS: only outputs/results.json is listed
+git diff outputs/results.json     # macOS: only meta.commit and meta.generated_utc change
 ```
 
 On a fresh clone (macOS, Python 3.12.0, no `.env`) those two lines were the only change, and every table and figure
-was byte-identical. On another OS the PNG bytes may differ even though no number changes.
+was byte-identical. On a fresh Linux clone (Ubuntu, Python 3.12.3, 2 cores, 6.5 min) every Sharpe, t-statistic,
+test result and headline number matched. The only differences: the figure PNGs (font rendering), the last printed
+digit of a few rows in three `flowclock_legs_*` tables, two hit rates of the secondary size-weighted supply variant
+(third decimal: one leg that the notional cap cuts to zero keeps a 1e-15 residual on macOS and is exactly 0 on
+Linux), and `meta.dirty`, which reads true because the figures are rewritten before `results.json`.
 One intermittent difference is not explained: in 1 of about 95 runs, 24 of the sensitivity grid's 480 cells, all in
 one rebuild variant (entry T-5, settled by month-end, Fed holdings deducted), came out different; the cause is
 unknown, and the headline numbers and every test were unaffected.
@@ -239,5 +285,5 @@ reproduces every number.
 
 The project started as "The Extension Clock". That first hypothesis failed its test, and the Flow Clock is what
 survived. This repository carries the full commit and tag history of the original private repository, minus one
-commit that held licensed Databento data and was force-pushed away. The original repository's GitHub activity log,
-with the push time of every pre-registration tag, is available to judges on request.
+commit that held licensed Databento data and was force-pushed away. The original private repository is available to judges on
+request. The tag and commit times quoted above are those recorded in git.
